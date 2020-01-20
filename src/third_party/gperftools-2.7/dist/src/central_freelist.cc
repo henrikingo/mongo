@@ -86,7 +86,7 @@ void CentralFreeList::ReleaseListToSpans(void* start, bool from_cache) {
     ReleaseToSpans(start, from_cache);
     start = next;
   }
-  if (stash_len_ >= kStashMax) ScavengeStash();
+  if (stash_len_ >= kStashMax) Scavenge();
 }
 
 // MapObjectToSpan should logically be part of ReleaseToSpans.  But
@@ -457,7 +457,7 @@ void CentralFreeList::DecrementCachedCount(void *start, void *end, int N)  {
 }
 
 // Already locked
-void CentralFreeList::ScavengeStash()  {
+void CentralFreeList::Scavenge()  {
   static bool prevent_recursion = false;
   if (prevent_recursion) return;
   prevent_recursion = true;
@@ -469,7 +469,7 @@ void CentralFreeList::ScavengeStash()  {
     used_slots_--;
     ReleaseListToSpans(tc_slots_[used_slots_].head, true);
   }
-  stash_sweeps_++;
+  scavenge_counter_++;
   prevent_recursion = false;
 }
 

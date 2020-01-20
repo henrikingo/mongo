@@ -87,8 +87,8 @@ class CentralFreeList {
   size_t OverheadBytes();
 
   // TODO
-  uint64_t StashSweeps(){
-      return stash_sweeps_;
+  uint64_t ScavengeCounter(){
+      return scavenge_counter_;
   }
 
   // Lock/Unlock the internal SpinLock. Used on the pthread_atfork call
@@ -178,7 +178,7 @@ class CentralFreeList {
   void IncrementCachedCount(void *start, void *end, int N) EXCLUSIVE_LOCKS_REQUIRED(lock_);
   void DecrementCachedCount(void *start, void *end, int N) EXCLUSIVE_LOCKS_REQUIRED(lock_);
   void ChangeCachedCount(void *start, void *end, int N, int sign) EXCLUSIVE_LOCKS_REQUIRED(lock_);
-  void ScavengeStash() EXCLUSIVE_LOCKS_REQUIRED(lock_);
+  void Scavenge() EXCLUSIVE_LOCKS_REQUIRED(lock_);
 
   // This lock protects all the data members.  cached_entries and cache_size_
   // may be looked at without holding the lock.
@@ -193,7 +193,7 @@ class CentralFreeList {
   size_t   stash_len_;      // Number of spans in stash_ only
   size_t   num_spans_;      // Number of spans in empty_ plus nonempty_ plus stash_
   size_t   counter_;        // Number of free objects in cache entry
-  uint64_t  stash_sweeps_;
+  uint64_t  scavenge_counter_;
 
   // Here we reserve space for TCEntry cache slots.  Space is preallocated
   // for the largest possible number of entries than any one size class may
