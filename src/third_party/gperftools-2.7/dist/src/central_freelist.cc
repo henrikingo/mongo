@@ -48,6 +48,7 @@ void CentralFreeList::Init(size_t cl) {
   size_class_ = cl;
   tcmalloc::DLL_Init(&empty_);
   tcmalloc::DLL_Init(&nonempty_);
+  tcmalloc::DLL_Init(&stash_);
   num_spans_ = 0;
   counter_ = 0;
 
@@ -79,12 +80,13 @@ void CentralFreeList::Init(size_t cl) {
   ASSERT(cache_size_ <= max_cache_size_);
 }
 
-void CentralFreeList::ReleaseListToSpans(void* start) {
+void CentralFreeList::ReleaseListToSpans(void* start, bool from_cache) {
   while (start) {
     void *next = SLL_Next(start);
-    ReleaseToSpans(start);
+    ReleaseToSpans(start, from_cache);
     start = next;
   }
+  if (stash_len_ >= kStashMax) ScavengeStash();
 }
 
 // MapObjectToSpan should logically be part of ReleaseToSpans.  But
@@ -101,10 +103,12 @@ Span* MapObjectToSpan(void* object) {
   return span;
 }
 
-void CentralFreeList::ReleaseToSpans(void* object) {
+void CentralFreeList::ReleaseToSpans(void* object, bool from_cache) {
   Span* span = MapObjectToSpan(object);
   ASSERT(span != NULL);
   ASSERT(span->refcount > 0);
+  ASSERT(span->cached_count >= 0);
+  ASSERT(span->cached_count <= span->refcount);
 
   // If span is empty, move it to non-empty list
   if (span->objects == NULL) {
@@ -128,6 +132,9 @@ void CentralFreeList::ReleaseToSpans(void* object) {
 
   counter_++;
   span->refcount--;
+  if ( from_cache ) span->cached_count--;
+  ASSERT(span->cached_count >= 0);
+  ASSERT(span->cached_count <= span->refcount);
   if (span->refcount == 0) {
     Event(span, '#', 0);
     counter_ -= ((span->length<<kPageShift) /
@@ -145,6 +152,16 @@ void CentralFreeList::ReleaseToSpans(void* object) {
   } else {
     *(reinterpret_cast<void**>(object)) = span->objects;
     span->objects = object;
+    if (span->cached_count == span->refcount &&
+        num_spans_ >= kStashThreshold) {
+      // All remaining objects are in fact in CentralFreeList now.
+      // Move the span to a lower priority list so that we don't give out
+      // new objects from this span anymore.
+      tcmalloc::DLL_Remove(span);
+      tcmalloc::DLL_Prepend(&stash_, span);
+      stash_len_++;
+      Event(span, 'S', 0);
+    }
   }
 }
 
@@ -221,7 +238,7 @@ bool CentralFreeList::ShrinkCache(int locked_size_class, bool force)
     // updates to the central list before calling it.
     cache_size_--;
     used_slots_--;
-    ReleaseListToSpans(tc_slots_[used_slots_].head);
+    ReleaseListToSpans(tc_slots_[used_slots_].head, true);
     return true;
   }
   cache_size_--;
@@ -238,9 +255,10 @@ void CentralFreeList::InsertRange(void *start, void *end, int N) {
     TCEntry *entry = &tc_slots_[slot];
     entry->head = start;
     entry->tail = end;
+    IncrementCachedCount(start, end, N);
     return;
   }
-  ReleaseListToSpans(start);
+  ReleaseListToSpans(start, false);
 }
 
 int CentralFreeList::RemoveRange(void **start, void **end, int N) {
@@ -253,6 +271,7 @@ int CentralFreeList::RemoveRange(void **start, void **end, int N) {
     TCEntry *entry = &tc_slots_[slot];
     *start = entry->head;
     *end = entry->tail;
+    DecrementCachedCount(start, end, N);
     lock_.Unlock();
     return N;
   }
@@ -288,7 +307,16 @@ int CentralFreeList::FetchFromOneSpansSafe(int N, void **start, void **end) {
 }
 
 int CentralFreeList::FetchFromOneSpans(int N, void **start, void **end) {
-  if (tcmalloc::DLL_IsEmpty(&nonempty_)) return 0;
+  if (tcmalloc::DLL_IsEmpty(&nonempty_)){
+    if (tcmalloc::DLL_IsEmpty(&stash_)) return 0;
+    // If we don't have any nonempty_ spans, we take one back from
+    // the stash
+    Span* stashed = stash_.next;
+    tcmalloc::DLL_Remove(stashed);
+    tcmalloc::DLL_Prepend(&nonempty_, stashed);
+    stash_len_--;
+    Event(span, 'N', 0);
+  }
   Span* span = nonempty_.next;
 
   ASSERT(span->objects != NULL);
@@ -313,6 +341,8 @@ int CentralFreeList::FetchFromOneSpans(int N, void **start, void **end) {
   span->objects = curr;
   SLL_SetNext(*end, NULL);
   span->refcount += result;
+  //These objects are going to a thread cache, won't be cached in central cache
+  //span->cached_count += result;
   counter_ -= result;
   return result;
 }
@@ -359,6 +389,7 @@ void CentralFreeList::Populate() {
   ASSERT(ptr <= limit);
   *tail = NULL;
   span->refcount = 0; // No sub-object in use yet
+  span->cached_count = 0;
 
   // Add span to list of non-empty spans
   lock_.Lock();
@@ -382,6 +413,64 @@ size_t CentralFreeList::OverheadBytes() {
   ASSERT(object_size > 0);
   const size_t overhead_per_span = (pages_per_span * kPageSize) % object_size;
   return num_spans_ * overhead_per_span;
+}
+
+void CentralFreeList::ChangeCachedCount(void *start, void *end, int N, int sign)  {
+  ASSERT( sign*sign == 1 ); // abs(sign)==1
+  int i = 0;
+  while (start) {
+    Span* span = MapObjectToSpan(start);
+    span->cached_count = span->cached_count + sign * 1;
+    void *next = SLL_Next(start);
+    start = next;
+    i++;
+  }
+  ASSERT(i == N);
+}
+
+void CentralFreeList::IncrementCachedCount(void *start, void *end, int N)  {
+  //ChangeCachedCount(start, end, N, +1);
+  ASSERT(start!=NULL);
+  void *curr = start;
+  for (int i = 0; i < N; i++) {
+    Span* span = MapObjectToSpan(curr);
+    ASSERT(span->cached_count <= span->refcount);
+    ASSERT(span->cached_count >= 0);
+    span->cached_count = span->cached_count + 1;
+    void *next = SLL_Next(curr);
+    curr = next;
+  }
+}
+
+void CentralFreeList::DecrementCachedCount(void *start, void *end, int N)  {
+  //ChangeCachedCount(start, end, N, -1);
+  ASSERT(start!=NULL);
+  void *curr = start;
+  for (int i = 0; i < N; i++) {
+    Span* span = MapObjectToSpan(*(reinterpret_cast<void**>(curr)));
+    ASSERT(span->cached_count <= span->refcount);
+    ASSERT(span->cached_count >= 0);
+    span->cached_count = span->cached_count - 1;
+    void *next = SLL_Next(curr);
+    curr = next;
+  }
+}
+
+// Already locked
+void CentralFreeList::ScavengeStash()  {
+  static bool prevent_recursion = false;
+  if (prevent_recursion) return;
+  prevent_recursion = true;
+
+  while (stash_len_ >= kStashMax && used_slots_ > 0) {
+    // ReleaseListToSpans releases the lock, so we have to make all the
+    // updates to the central list before calling it.
+    cache_size_--;
+    used_slots_--;
+    ReleaseListToSpans(tc_slots_[used_slots_].head, true);
+  }
+  stash_sweeps_++;
+  prevent_recursion = false;
 }
 
 }  // namespace tcmalloc

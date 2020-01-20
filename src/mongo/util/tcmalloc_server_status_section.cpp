@@ -148,6 +148,9 @@ public:
             auto tcmallocReleaseRate = MallocExtension::instance()->GetMemoryReleaseRate();
             sub.appendNumber("release_rate", tcmallocReleaseRate);
 
+            appendNumericPropertyIfAvailable(
+                sub, "central_cache_stash_sweeps", "tcmalloc.central_cache_stash_sweeps");
+
 #if MONGO_HAVE_GPERFTOOLS_SIZE_CLASS_STATS
             if (verbosity >= 2) {
                 // Size class information

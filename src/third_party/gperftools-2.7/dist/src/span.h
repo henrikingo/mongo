@@ -81,6 +81,8 @@ struct Span {
     char span_iter_space[sizeof(SpanSet::iterator)];
   };
   unsigned int  refcount : 16;  // Number of non-free objects
+  unsigned int  cached_count : 16; // Objects currently in CentralFreeList
+                                   // (non-free but not allocated by threads)
   unsigned int  sizeclass : 8;  // Size-class for small objects (or 0)
   unsigned int  location : 2;   // Is the span on a freelist, and if so, which?
   unsigned int  sample : 1;     // Sampled object?

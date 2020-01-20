@@ -86,6 +86,11 @@ class CentralFreeList {
   // page full of 5-byte objects would have 2 bytes memory overhead).
   size_t OverheadBytes();
 
+  // TODO
+  uint64_t StashSweeps(){
+      return stash_sweeps_;
+  }
+
   // Lock/Unlock the internal SpinLock. Used on the pthread_atfork call
   // to set the lock in a consistent state before the fork.
   void Lock() {
@@ -107,15 +112,19 @@ class CentralFreeList {
 
   // A central cache freelist can have anywhere from 0 to kMaxNumTransferEntries
   // slots to put link list chains into.
+  // TODO explain stash
 #ifdef TCMALLOC_SMALL_BUT_SLOW
   // For the small memory model, the transfer cache is not used.
   static const int kMaxNumTransferEntries = 0;
+  static const int kStashThreshold = 1<<20; // A large number we'll never reach
 #else
   // Starting point for the the maximum number of entries in the transfer cache.
   // This actual maximum for a given size class may be lower than this
   // maximum value.
   static const int kMaxNumTransferEntries = 64;
+  static const int kStashThreshold = 3;
 #endif
+  static const int kStashMax = 6;
 
   // REQUIRES: lock_ is held
   // Remove object from cache and return.
@@ -131,12 +140,12 @@ class CentralFreeList {
   // REQUIRES: lock_ is held
   // Release a linked list of objects to spans.
   // May temporarily release lock_.
-  void ReleaseListToSpans(void *start) EXCLUSIVE_LOCKS_REQUIRED(lock_);
+  void ReleaseListToSpans(void *start, bool from_cache) EXCLUSIVE_LOCKS_REQUIRED(lock_);
 
   // REQUIRES: lock_ is held
   // Release an object to spans.
   // May temporarily release lock_.
-  void ReleaseToSpans(void* object) EXCLUSIVE_LOCKS_REQUIRED(lock_);
+  void ReleaseToSpans(void* object, bool from_cache) EXCLUSIVE_LOCKS_REQUIRED(lock_);
 
   // REQUIRES: lock_ is held
   // Populate cache by fetching from the page heap.
@@ -165,6 +174,12 @@ class CentralFreeList {
   // concurrently which could lead to a deadlock.
   bool ShrinkCache(int locked_size_class, bool force) LOCKS_EXCLUDED(lock_);
 
+  // TODO
+  void IncrementCachedCount(void *start, void *end, int N) EXCLUSIVE_LOCKS_REQUIRED(lock_);
+  void DecrementCachedCount(void *start, void *end, int N) EXCLUSIVE_LOCKS_REQUIRED(lock_);
+  void ChangeCachedCount(void *start, void *end, int N, int sign) EXCLUSIVE_LOCKS_REQUIRED(lock_);
+  void ScavengeStash() EXCLUSIVE_LOCKS_REQUIRED(lock_);
+
   // This lock protects all the data members.  cached_entries and cache_size_
   // may be looked at without holding the lock.
   SpinLock lock_;
@@ -173,8 +188,12 @@ class CentralFreeList {
   size_t   size_class_;     // My size class
   Span     empty_;          // Dummy header for list of empty spans
   Span     nonempty_;       // Dummy header for list of non-empty spans
-  size_t   num_spans_;      // Number of spans in empty_ plus nonempty_
+  Span     stash_;          // Dummy header for list of spans where all
+                            // outstanding objects are in the CentralFreeList
+  size_t   stash_len_;      // Number of spans in stash_ only
+  size_t   num_spans_;      // Number of spans in empty_ plus nonempty_ plus stash_
   size_t   counter_;        // Number of free objects in cache entry
+  uint64_t  stash_sweeps_;
 
   // Here we reserve space for TCEntry cache slots.  Space is preallocated
   // for the largest possible number of entries than any one size class may

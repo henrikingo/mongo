@@ -352,6 +352,7 @@ struct TCMallocStats {
   uint64_t transfer_bytes;    // Bytes in central transfer cache
   uint64_t metadata_bytes;    // Bytes alloced for metadata
   PageHeap::Stats pageheap;   // Stats from page heap
+  uint64_t stash_sweeps;
 };
 
 // Get stats into "r".  Also, if class_count != NULL, class_count[k]
@@ -363,6 +364,7 @@ static void ExtractStats(TCMallocStats* r, uint64_t* class_count,
                          PageHeap::LargeSpanStats* large_spans) {
   r->central_bytes = 0;
   r->transfer_bytes = 0;
+  r->stash_sweeps = 0;
   for (int cl = 0; cl < Static::num_size_classes(); ++cl) {
     const int length = Static::central_cache()[cl].length();
     const int tc_length = Static::central_cache()[cl].tc_length();
@@ -371,6 +373,7 @@ static void ExtractStats(TCMallocStats* r, uint64_t* class_count,
         Static::sizemap()->ByteSizeForClass(cl));
     r->central_bytes += (size * length) + cache_overhead;
     r->transfer_bytes += (size * tc_length);
+    r->stash_sweeps += Static::central_cache()[cl].StashSweeps();
     if (class_count) {
       // Sum the lengths of all per-class freelists, except the per-thread
       // freelists, which get counted when we call GetThreadStats(), below.
@@ -445,6 +448,7 @@ static void DumpStats(TCMalloc_Printer* out, int level) {
       "MALLOC:   %12" PRIu64 "              Spans in use\n"
       "MALLOC:   %12" PRIu64 "              Thread heaps in use\n"
       "MALLOC:   %12" PRIu64 "              Tcmalloc page size\n"
+      "MALLOC:   %12" PRIu64 "              Central Cache Stash Sweeps\n"
       "------------------------------------------------\n"
       "Call ReleaseFreeMemory() to release freelist memory to the OS"
       " (via madvise()).\n"
@@ -461,7 +465,8 @@ static void DumpStats(TCMalloc_Printer* out, int level) {
       virtual_memory_used, virtual_memory_used / MiB,
       uint64_t(Static::span_allocator()->inuse()),
       uint64_t(ThreadCache::HeapsInUse()),
-      uint64_t(kPageSize));
+      uint64_t(kPageSize),
+      stats.stash_sweeps);
 
   if (level >= 2) {
     out->printf("------------------------------------------------\n");
@@ -724,6 +729,13 @@ class TCMallocImplementation : public MallocExtension {
       TCMallocStats stats;
       ExtractStats(&stats, NULL, NULL, NULL);
       *value = stats.central_bytes;
+      return true;
+    }
+
+    if (strcmp(name, "tcmalloc.central_cache_stash_sweeps") == 0) {
+      TCMallocStats stats;
+      ExtractStats(&stats, NULL, NULL, NULL);
+      *value = stats.stash_sweeps;
       return true;
     }
 
