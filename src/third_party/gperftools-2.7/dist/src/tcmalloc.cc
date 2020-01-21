@@ -353,6 +353,7 @@ struct TCMallocStats {
   uint64_t metadata_bytes;    // Bytes alloced for metadata
   PageHeap::Stats pageheap;   // Stats from page heap
   uint64_t central_scavenge_count; // How many time CentralFreeList::Scavenge() ran
+  uint64_t central_stash_len; // Nr of stashed spans in all classes
 };
 
 // Get stats into "r".  Also, if class_count != NULL, class_count[k]
@@ -365,6 +366,7 @@ static void ExtractStats(TCMallocStats* r, uint64_t* class_count,
   r->central_bytes = 0;
   r->transfer_bytes = 0;
   r->central_scavenge_count = 0;
+  r->central_stash_len = 0;
   for (int cl = 0; cl < Static::num_size_classes(); ++cl) {
     const int length = Static::central_cache()[cl].length();
     const int tc_length = Static::central_cache()[cl].tc_length();
@@ -374,6 +376,7 @@ static void ExtractStats(TCMallocStats* r, uint64_t* class_count,
     r->central_bytes += (size * length) + cache_overhead;
     r->transfer_bytes += (size * tc_length);
     r->central_scavenge_count += Static::central_cache()[cl].ScavengeCounter();
+    r->central_stash_len += uint64_t(Static::central_cache()[cl].StashLength());
     if (class_count) {
       // Sum the lengths of all per-class freelists, except the per-thread
       // freelists, which get counted when we call GetThreadStats(), below.
@@ -449,6 +452,7 @@ static void DumpStats(TCMalloc_Printer* out, int level) {
       "MALLOC:   %12" PRIu64 "              Thread heaps in use\n"
       "MALLOC:   %12" PRIu64 "              Tcmalloc page size\n"
       "MALLOC:   %12" PRIu64 "              Central Cache Scavenges\n"
+      "MALLOC:   %12" PRIu64 "              Central Cache Stash Length\n"
       "------------------------------------------------\n"
       "Call ReleaseFreeMemory() to release freelist memory to the OS"
       " (via madvise()).\n"
@@ -466,7 +470,8 @@ static void DumpStats(TCMalloc_Printer* out, int level) {
       uint64_t(Static::span_allocator()->inuse()),
       uint64_t(ThreadCache::HeapsInUse()),
       uint64_t(kPageSize),
-      stats.central_scavenge_count);
+      stats.central_scavenge_count,
+      stats.central_stash_len);
 
   if (level >= 2) {
     out->printf("------------------------------------------------\n");
@@ -736,6 +741,13 @@ class TCMallocImplementation : public MallocExtension {
       TCMallocStats stats;
       ExtractStats(&stats, NULL, NULL, NULL);
       *value = stats.central_scavenge_count;
+      return true;
+    }
+
+    if (strcmp(name, "tcmalloc.central_cache_stash_len") == 0) {
+      TCMallocStats stats;
+      ExtractStats(&stats, NULL, NULL, NULL);
+      *value = stats.central_stash_len;
       return true;
     }
 

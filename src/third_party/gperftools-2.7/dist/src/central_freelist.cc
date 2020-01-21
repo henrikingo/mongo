@@ -152,7 +152,7 @@ void CentralFreeList::ReleaseToSpans(void* object, bool from_cache) {
   } else {
     *(reinterpret_cast<void**>(object)) = span->objects;
     span->objects = object;
-    if (span->cached_count == span->refcount &&
+    if (span->cached_count == span->refcount && !from_cache &&
         num_spans_ >= kStashThreshold) {
       // All remaining objects are in fact in CentralFreeList now.
       // Move the span to a lower priority list so that we don't give out

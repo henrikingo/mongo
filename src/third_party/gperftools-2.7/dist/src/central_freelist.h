@@ -90,6 +90,9 @@ class CentralFreeList {
   uint64_t ScavengeCounter(){
       return scavenge_counter_;
   }
+  size_t StashLength(){
+      return stash_len_;
+  }
 
   // Lock/Unlock the internal SpinLock. Used on the pthread_atfork call
   // to set the lock in a consistent state before the fork.
